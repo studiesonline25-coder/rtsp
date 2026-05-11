@@ -15,9 +15,10 @@ android {
         versionName = "1.0"
 
         ndk {
+            // ONLY arm64-v8a for modern devices. 
+            // This saves ~15MB compared to including 32-bit.
             abiFilters.clear()
             abiFilters.add("arm64-v8a")
-            abiFilters.add("armeabi-v7a")
         }
     }
 
@@ -48,7 +49,6 @@ android {
 }
 
 dependencies {
-    // Android Core
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
@@ -56,17 +56,8 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.8.2")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
 
-    // === DECODER TIER 1: LibVLC (Most Compatible) ===
-    implementation("org.videolan.android:libvlc-all:3.6.0")
-
-    // === DECODER TIER 2: ExoPlayer Media3 RTSP (Fallback) ===
-    val media3Version = "1.3.1"
-    implementation("androidx.media3:media3-exoplayer:$media3Version")
-    implementation("androidx.media3:media3-exoplayer-rtsp:$media3Version")
-    implementation("androidx.media3:media3-ui:$media3Version")
-
-    // === DECODER TIER 3: Raw MediaCodec (Built into Android SDK — no dep needed) ===
-
+    // NO LibVLC, NO ExoPlayer. Using custom Raw MediaCodec engine.
+}
     // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
