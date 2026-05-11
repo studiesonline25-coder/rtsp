@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RTSP Master</string>
+    <string name="notification_channel_name">RTSP Stream</string>
+    <string name="notification_channel_desc">Active RTSP stream receiver</string>
+    <string name="stream_active">Stream Active</string>
+    <string name="stream_connecting">Connecting…</string>
+    <string name="stream_error">Stream Error</string>
+    <string name="stream_reconnecting">Reconnecting…</string>
+    <string name="hint_rtsp_url">rtsp://192.168.1.100:554/stream</string>
+    <string name="hint_forward_ip">Forward IP (optional)</string>
+    <string name="hint_forward_port">Port</string>
+    <string name="btn_connect">Connect</string>
+    <string name="btn_disconnect">Disconnect</string>
+    <string name="btn_forward">Forward</string>
+    <string name="label_status">Status: Idle</string>
+    <string name="label_decoder">Decoder: —</string>
+    <string name="label_fps">FPS: —</string>
+    <string name="label_strategy">Strategy: —</string>
+</resources>
