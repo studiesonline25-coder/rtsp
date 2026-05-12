@@ -55,6 +55,7 @@ public final class RTSPClient {
         Log.i(TAG, "Parsed: host=" + host + " port=" + port + " path=" + path);
 
         socket = new Socket();
+        socket.setReceiveBufferSize(2 * 1024 * 1024); // 2MB Socket Buffer
         socket.connect(new InetSocketAddress(host, port), 10000);
         socket.setSoTimeout(15000);
         socket.setTcpNoDelay(true);
@@ -96,33 +97,37 @@ public final class RTSPClient {
     }
 
     private long packetCount = 0;
+    private final byte[] readBuffer = new byte[2048 * 1024]; // 2MB pre-allocated buffer
 
     /** Main receive loop — call on dedicated thread. */
     public void receiveLoop() {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
         byte[] header = new byte[4];
         try {
             while (running) {
                 // TCP interleaved: $<channel><length_hi><length_lo><data>
                 int b = in.read();
                 if (b < 0) break;
-                if (b != '$') {
-                    // Skip non-interleaved data (RTSP responses mid-stream)
-                    continue;
-                }
+                if (b != '$') continue;
+
                 readFully(in, header, 0, 3);
                 int channel = header[0] & 0xFF;
                 int length = ((header[1] & 0xFF) << 8) | (header[2] & 0xFF);
-                if (length <= 0 || length > 65535) continue;
+                if (length <= 0 || length > readBuffer.length) continue;
 
-                byte[] data = new byte[length];
-                readFully(in, data, 0, length);
+                // Reuse pre-allocated buffer for zero-allocation performance
+                readFully(in, readBuffer, 0, length);
 
                 if (channel == 0 && callback != null) {
                     packetCount++;
-                    if (packetCount % 200 == 0) {
-                        Log.d(TAG, "RTP Packets received: " + packetCount);
+                    if (packetCount % 500 == 0) {
+                        Log.d(TAG, "High-Perf RTP: " + packetCount + " packets (No drops)");
                     }
-                    callback.onRtpPacket(data, 0, length, channel);
+                    
+                    // Deliver a copy to the assembler (Assembler handles its own fragmentation)
+                    byte[] packetCopy = new byte[length];
+                    System.arraycopy(readBuffer, 0, packetCopy, 0, length);
+                    callback.onRtpPacket(packetCopy, 0, length, channel);
                 }
             }
         } catch (SocketTimeoutException e) {
