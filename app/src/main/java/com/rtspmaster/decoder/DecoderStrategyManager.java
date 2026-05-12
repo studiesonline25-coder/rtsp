@@ -212,6 +212,7 @@ public final class DecoderStrategyManager {
                 byte[] raw = new byte[nalWithStartCode.length - 4];
                 System.arraycopy(nalWithStartCode, 4, raw, 0, raw.length);
                 if (nalType == 7) mtkDecoder.setSpsAndPps(raw, null);
+                else mtkDecoder.setSpsAndPps(null, raw); // Store PPS too
             }
             if (mtkDecoder.isReady()) {
                 mtkDecoder.feedNalUnit(nalWithStartCode, timestamp);

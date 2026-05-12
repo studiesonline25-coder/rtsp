@@ -88,6 +88,8 @@ public final class RTSPClient {
         Log.i(TAG, "RTSP connected, receiving RTP over TCP");
     }
 
+    private long packetCount = 0;
+
     /** Main receive loop — call on dedicated thread. */
     public void receiveLoop() {
         byte[] header = new byte[4];
@@ -109,6 +111,10 @@ public final class RTSPClient {
                 readFully(in, data, 0, length);
 
                 if (channel == 0 && callback != null) {
+                    packetCount++;
+                    if (packetCount % 200 == 0) {
+                        Log.d(TAG, "RTP Packets received: " + packetCount);
+                    }
                     callback.onRtpPacket(data, 0, length, channel);
                 }
             }
@@ -118,6 +124,7 @@ public final class RTSPClient {
             if (running) Log.e(TAG, "Receive error", e);
         } finally {
             running = false;
+            Log.i(TAG, "RTSP Receiver Loop Ended. Total packets: " + packetCount);
             if (callback != null) callback.onDisconnected("Stream ended");
         }
     }
