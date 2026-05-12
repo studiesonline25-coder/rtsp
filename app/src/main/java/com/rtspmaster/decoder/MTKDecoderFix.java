@@ -220,9 +220,10 @@ public final class MTKDecoderFix {
                 //   2. A decoded frame (the IDR)
                 // We loop to handle both events.
                 boolean frameAlreadyDequeued = false;
+                int outIndex;
                 do {
                     long timeout = frameAlreadyDequeued ? 0L : DEQUEUE_OUTPUT_TIMEOUT_US;
-                    int outIndex = decoder.dequeueOutputBuffer(bufferInfo, timeout);
+                    outIndex = decoder.dequeueOutputBuffer(bufferInfo, timeout);
 
                     switch (outIndex) {
                         case MediaCodec.INFO_OUTPUT_FORMAT_CHANGED:
