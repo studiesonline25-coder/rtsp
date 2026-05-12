@@ -70,7 +70,7 @@ public final class MTKDecoderFix {
     public boolean isReady() { return isConfigured.get() && isStarted.get(); }
 
     public boolean configure(boolean forceSoftware) {
-        this.useSoftwareFallback = forceSoftware;
+        this.useSoftwareFallback = true; // HARDCODED SOFTWARE FORCE FOR TEST
         if (outputSurface == null || spsData == null || ppsData == null || !outputSurface.isValid()) return false;
         if (videoWidth <= 0) { videoWidth = 720; videoHeight = 1280; }
         
