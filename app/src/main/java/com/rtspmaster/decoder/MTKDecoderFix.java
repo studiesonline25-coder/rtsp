@@ -183,34 +183,28 @@ public final class MTKDecoderFix {
 
         while (isRunning.get()) {
             try {
-                // === INPUT: Get a buffer and fill it with a frame ===
-                int inIndex = decoder.dequeueInputBuffer(DEQUEUE_INPUT_TIMEOUT_US);
-                if (inIndex >= 0) {
-                    ByteBuffer inputBuffer = decoder.getInputBuffer(inIndex);
-                    if (inputBuffer != null) {
-                        inputBuffer.clear();
-
-                        // Block up to 1000ms waiting for a frame from the RTSP thread
-                        FrameData frame = frameQueue.poll(1000, TimeUnit.MILLISECONDS);
-                        if (frame == null) {
-                            // No frame available — submit empty buffer
-                            decoder.queueInputBuffer(inIndex, 0, 0, 0L, 0);
-                        } else {
+                // === INPUT: Get a frame first, THEN a buffer ===
+                // This prevents leaking input buffers if the queue is empty
+                FrameData frame = frameQueue.poll(20, TimeUnit.MILLISECONDS);
+                if (frame != null) {
+                    int inIndex = decoder.dequeueInputBuffer(DEQUEUE_INPUT_TIMEOUT_US);
+                    if (inIndex >= 0) {
+                        ByteBuffer inputBuffer = decoder.getInputBuffer(inIndex);
+                        if (inputBuffer != null) {
+                            inputBuffer.clear();
+                            
                             // Normalize timestamp
                             if (firstTimestamp == -1) firstTimestamp = frame.timestampMs;
-                            long pts = (frame.timestampMs - firstTimestamp) * 1000; // to microseconds
+                            long pts = (frame.timestampMs - firstTimestamp) * 1000;
 
                             inputBuffer.put(frame.data, frame.offset, frame.length);
 
-                            // ★ THE KEY FIX ★
-                            // Combined SPS+PPS+IDR → BUFFER_FLAG_KEY_FRAME (NOT CODEC_CONFIG!)
-                            // This matches alexvas VideoDecodeThread.kt line 358-359:
-                            //   val flags = if (frame.isKeyframe)
-                            //       (MediaCodec.BUFFER_FLAG_KEY_FRAME) else 0
                             int flags = frame.isKeyframe ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
-
                             decoder.queueInputBuffer(inIndex, 0, frame.length, pts, flags);
                         }
+                    } else {
+                        // Could not get a buffer — put the frame back (or drop if too old)
+                        frameQueue.offer(frame);
                     }
                 }
 

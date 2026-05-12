@@ -223,6 +223,9 @@ public final class DecoderStrategyManager {
                 // (they will be combined with the first IDR frame)
                 if (sps != null && pps != null) {
                     mtkDecoder.setSpsAndPps(sps, pps);
+                    if (nalAssembler != null) {
+                        nalAssembler.setSpsAndPps(sps, pps);
+                    }
                 }
                 if (width > 0 && height > 0) {
                     mtkDecoder.setVideoDimensions(width, height);

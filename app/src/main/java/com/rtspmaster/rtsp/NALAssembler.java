@@ -51,6 +51,31 @@ public final class NALAssembler {
     }
 
     /**
+     * Set the initial SPS/PPS from SDP.
+     * These will be prepended to the first IDR frame if they haven't arrived in-stream.
+     */
+    public void setSpsAndPps(byte[] sps, byte[] pps) {
+        if (sps != null) {
+            this.savedSps = ensureStartCode(sps);
+            Log.d(TAG, "Initialized SPS from SDP: " + this.savedSps.length + " bytes");
+        }
+        if (pps != null) {
+            this.savedPps = ensureStartCode(pps);
+            Log.d(TAG, "Initialized PPS from SDP: " + this.savedPps.length + " bytes");
+        }
+    }
+
+    private byte[] ensureStartCode(byte[] data) {
+        if (data.length > 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1) {
+            return data;
+        }
+        byte[] withStartCode = new byte[data.length + 4];
+        System.arraycopy(START_CODE, 0, withStartCode, 0, 4);
+        System.arraycopy(data, 0, withStartCode, 4, data.length);
+        return withStartCode;
+    }
+
+    /**
      * Process a raw RTP packet (with RTP header) from TCP interleaved frame.
      */
     public void processRtpPacket(byte[] packet, int offset, int length) {
