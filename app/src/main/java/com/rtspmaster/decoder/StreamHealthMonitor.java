@@ -15,7 +15,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class StreamHealthMonitor {
     private static final String TAG = "HealthMonitor";
     private static final int LOW_FPS_THRESHOLD = 1;
-    private static final long LOW_FPS_DURATION_MS = 10000;
+    private static final long LOW_FPS_DURATION_MS = 30000;
+    private static final long STARTUP_GRACE_MS = 15000;
     private static final int ERROR_THRESHOLD = 3;
     private static final long ERROR_WINDOW_MS = 30000;
 
@@ -42,8 +43,9 @@ public final class StreamHealthMonitor {
 
     public void start() {
         running = true;
-        fpsWindowStart = System.currentTimeMillis();
-        errorWindowStart = System.currentTimeMillis();
+        long startTime = System.currentTimeMillis();
+        fpsWindowStart = startTime;
+        errorWindowStart = startTime;
         frameCount.set(0);
         errorCount.set(0);
         lowFpsStart = 0;
@@ -62,7 +64,7 @@ public final class StreamHealthMonitor {
                         if (callback != null) callback.onHealthUpdate(currentFps, healthy);
                     });
 
-                    if (!healthy) {
+                    if (!healthy && (now - startTime > STARTUP_GRACE_MS)) {
                         if (lowFpsStart == 0) lowFpsStart = now;
                         else if (now - lowFpsStart > LOW_FPS_DURATION_MS) {
                             mainHandler.post(() -> { if (callback != null) callback.onLowFps(); });

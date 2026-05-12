@@ -276,8 +276,14 @@ public final class NALAssembler {
         }
     }
 
+    private long deliveryCount = 0;
+
     private void deliverNal(byte[] nal, long timestamp, int nalType) {
         if (callback != null) {
+            deliveryCount++;
+            if (deliveryCount <= 5 || deliveryCount % 100 == 0) {
+                Log.d(TAG, "Deliver #" + deliveryCount + " type=" + nalType + " size=" + nal.length);
+            }
             callback.onNalUnit(nal, timestamp, nalType);
         }
     }
