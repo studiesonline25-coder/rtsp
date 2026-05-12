@@ -201,6 +201,7 @@ public final class DecoderStrategyManager {
             }
             @Override public void onFormatChanged(int w, int h) {
                 Log.i(TAG, "Video: " + w + "x" + h);
+                if (glRenderer != null) glRenderer.updateBufferSize(w, h);
             }
             @Override public void onFirstFrame() {
                 if (callback != null) {

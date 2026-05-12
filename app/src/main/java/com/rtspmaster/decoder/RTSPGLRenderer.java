@@ -142,6 +142,13 @@ public final class RTSPGLRenderer implements GLSurfaceView.Renderer, SurfaceText
         frameAvailable = true;
     }
 
+    public void updateBufferSize(int width, int height) {
+        if (surfaceTexture != null) {
+            surfaceTexture.setDefaultBufferSize(width, height);
+            Log.i(TAG, "Buffer size updated: " + width + "x" + height);
+        }
+    }
+
     public void release() {
         if (decoderSurface != null) { decoderSurface.release(); decoderSurface = null; }
         if (surfaceTexture != null) { surfaceTexture.release(); surfaceTexture = null; }

@@ -136,7 +136,12 @@ public final class MTKDecoderFix {
                 @Override public void onOutputFormatChanged(@NonNull MediaCodec c, @NonNull MediaFormat f) {
                     videoWidth = f.getInteger(MediaFormat.KEY_WIDTH);
                     videoHeight = f.getInteger(MediaFormat.KEY_HEIGHT);
-                    if (callback != null) callback.onFormatChanged(videoWidth, videoHeight);
+                    
+                    int stride = f.containsKey(MediaFormat.KEY_STRIDE) ? f.getInteger(MediaFormat.KEY_STRIDE) : videoWidth;
+                    int sliceHeight = f.containsKey(MediaFormat.KEY_SLICE_HEIGHT) ? f.getInteger(MediaFormat.KEY_SLICE_HEIGHT) : videoHeight;
+                    
+                    Log.i(TAG, "Format Changed: " + videoWidth + "x" + videoHeight + " (Stride: " + stride + "x" + sliceHeight + ")");
+                    if (callback != null) callback.onFormatChanged(stride, sliceHeight);
                 }
             }, callbackHandler);
 
