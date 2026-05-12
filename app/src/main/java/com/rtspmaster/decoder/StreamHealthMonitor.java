@@ -14,8 +14,8 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class StreamHealthMonitor {
     private static final String TAG = "HealthMonitor";
-    private static final int LOW_FPS_THRESHOLD = 5;
-    private static final long LOW_FPS_DURATION_MS = 3000;
+    private static final int LOW_FPS_THRESHOLD = 1;
+    private static final long LOW_FPS_DURATION_MS = 10000;
     private static final int ERROR_THRESHOLD = 3;
     private static final long ERROR_WINDOW_MS = 30000;
 

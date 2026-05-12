@@ -139,24 +139,35 @@ public final class MTKDecoderFix {
         }
     }
 
-    public void feedNalUnit(byte[] nalData, long timestamp) {
+    public void feedNalUnit(byte[] nalData, long rtpTimestamp) {
         if (!isStarted.get() || decoder == null) return;
+        
+        // Fix 1: Convert 90kHz RTP timestamp to microseconds
+        long ptsUs = (rtpTimestamp * 1000000L) / 90000L;
+
         int nalType = getNalType(nalData);
         if (feedPhase.get() == 3) {
-            if (nalType != 5) return;
+            // Settle phase finished, start feeding everything
             feedPhase.set(4);
         }
+        
         Integer idx;
-        try { idx = inputBufferQueue.poll(50, TimeUnit.MILLISECONDS); } catch (InterruptedException e) { return; }
+        try { 
+            idx = inputBufferQueue.poll(50, TimeUnit.MILLISECONDS); 
+        } catch (InterruptedException e) { return; }
+        
         if (idx == null) return;
         try {
             ByteBuffer buf = decoder.getInputBuffer(idx);
             if (buf == null) return;
-            buf.clear(); buf.put(nalData);
+            buf.clear();
+            buf.put(nalData);
+            
             int flags = 0;
             if (nalType == 7 || nalType == 8) flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
             else if (nalType == 5) flags = MediaCodec.BUFFER_FLAG_KEY_FRAME;
-            decoder.queueInputBuffer(idx, 0, nalData.length, timestamp, flags);
+            
+            decoder.queueInputBuffer(idx, 0, nalData.length, ptsUs, flags);
         } catch (IllegalStateException e) { Log.w(TAG, "Feed error", e); }
     }
 
