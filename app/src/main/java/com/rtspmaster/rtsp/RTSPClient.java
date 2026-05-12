@@ -29,12 +29,21 @@ public final class RTSPClient {
     private volatile boolean running = false;
     private final RTSPCallback callback;
 
+    private String username, password;
+
     public RTSPClient(RTSPCallback callback) {
         this.callback = callback;
     }
 
     public void connect(String url) throws Exception {
         URI uri = new URI(url);
+        String userInfo = uri.getUserInfo();
+        if (userInfo != null && userInfo.contains(":")) {
+            String[] parts = userInfo.split(":", 2);
+            username = parts[0];
+            password = parts[1];
+        }
+
         String host = uri.getHost();
         int port = uri.getPort() > 0 ? uri.getPort() : 554;
 
@@ -47,16 +56,33 @@ public final class RTSPClient {
 
         // DESCRIBE
         String descResp = sendRequest("DESCRIBE", url, "Accept: application/sdp\r\n");
+        if (descResp.contains("401 Unauthorized") && username != null) {
+            // Try Basic Auth
+            String auth = "Authorization: Basic " + Base64.encodeToString((username + ":" + password).getBytes(), Base64.NO_WRAP) + "\r\n";
+            descResp = sendRequest("DESCRIBE", url, "Accept: application/sdp\r\n" + auth);
+        }
+
+        if (descResp.contains("401 Unauthorized") || !descResp.contains("v=0")) {
+            throw new IOException("Failed to connect or unauthorized: " + descResp.split("\n")[0]);
+        }
+
         parseSDP(descResp);
 
         // SETUP — TCP interleaved
         String trackUrl = extractTrackUrl(descResp, url);
-        String setupResp = sendRequest("SETUP", trackUrl,
-                "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n");
+        String setupHeader = "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n";
+        if (username != null) {
+            setupHeader += "Authorization: Basic " + Base64.encodeToString((username + ":" + password).getBytes(), Base64.NO_WRAP) + "\r\n";
+        }
+        String setupResp = sendRequest("SETUP", trackUrl, setupHeader);
         sessionId = extractSession(setupResp);
 
         // PLAY
-        sendRequest("PLAY", url, "Session: " + sessionId + "\r\nRange: npt=0.000-\r\n");
+        String playHeader = "Session: " + sessionId + "\r\nRange: npt=0.000-\r\n";
+        if (username != null) {
+            playHeader += "Authorization: Basic " + Base64.encodeToString((username + ":" + password).getBytes(), Base64.NO_WRAP) + "\r\n";
+        }
+        sendRequest("PLAY", url, playHeader);
 
         running = true;
         Log.i(TAG, "RTSP connected, receiving RTP over TCP");

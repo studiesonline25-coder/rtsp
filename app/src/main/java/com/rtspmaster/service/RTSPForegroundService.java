@@ -35,6 +35,7 @@ public final class RTSPForegroundService extends Service {
     private DecoderStrategyManager strategyManager;
     private String currentUrl;
     private boolean isStreaming = false;
+    private android.os.PowerManager.WakeLock wakeLock;
 
     public class LocalBinder extends Binder {
         public RTSPForegroundService getService() {
@@ -47,6 +48,12 @@ public final class RTSPForegroundService extends Service {
         super.onCreate();
         createNotificationChannel();
         strategyManager = new DecoderStrategyManager(this);
+        
+        android.os.PowerManager pm = (android.os.PowerManager) getSystemService(android.content.Context.POWER_SERVICE);
+        if (pm != null) {
+            wakeLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "RTSPMaster:WakeLock");
+        }
+        
         Log.i(TAG, "Service created");
     }
 
@@ -59,12 +66,17 @@ public final class RTSPForegroundService extends Service {
             String url = intent.getStringExtra(EXTRA_URL);
             int strategy = intent.getIntExtra(EXTRA_STRATEGY, -1);
             if (url != null) {
-                startForeground(NOTIFICATION_ID, buildNotification("Connecting..."));
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(NOTIFICATION_ID, buildNotification("Connecting..."), 
+                            android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
+                } else {
+                    startForeground(NOTIFICATION_ID, buildNotification("Connecting..."));
+                }
                 startStream(url, strategy);
             }
         } else if (ACTION_STOP.equals(action)) {
             stopStream();
-            stopForeground(STOP_FOREGROUND_REMOVE);
+            stopForeground(true);
             stopSelf();
         }
 
@@ -80,6 +92,7 @@ public final class RTSPForegroundService extends Service {
     @Override
     public void onDestroy() {
         stopStream();
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         super.onDestroy();
         Log.i(TAG, "Service destroyed");
     }
@@ -94,6 +107,10 @@ public final class RTSPForegroundService extends Service {
     public void startStream(String url, int strategy) {
         this.currentUrl = url;
         this.isStreaming = true;
+        
+        if (wakeLock != null && !wakeLock.isHeld()) {
+            wakeLock.acquire(3600000); // 1 hour max
+        }
 
         if (strategy < 0) {
             strategy = strategyManager.selectInitialStrategy();
@@ -122,6 +139,9 @@ public final class RTSPForegroundService extends Service {
 
     public void stopStream() {
         isStreaming = false;
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
         if (strategyManager != null) {
             strategyManager.stop();
         }

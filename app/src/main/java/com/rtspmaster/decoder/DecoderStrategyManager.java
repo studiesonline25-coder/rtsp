@@ -138,6 +138,7 @@ public final class DecoderStrategyManager {
 
     public void reconnect() {
         if (rtspUrl != null) {
+            Log.i(TAG, "Reconnecting in 5s...");
             start(rtspUrl, currentStrategy);
         }
     }
@@ -239,7 +240,10 @@ public final class DecoderStrategyManager {
                 rtspClient.receiveLoop();
             } catch (Exception e) {
                 Log.e(TAG, "RTSP failed", e);
-                mainHandler.post(() -> reconnect());
+                mainHandler.post(() -> {
+                    if (callback != null) callback.onError("RTSP Error: " + e.getMessage());
+                    mainHandler.postDelayed(() -> reconnect(), 5000);
+                });
             }
         });
     }

@@ -69,6 +69,17 @@ public final class RTSPActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_rtsp);
 
+        // Crash handler — Fix for "app closed" mystery
+        Thread.setDefaultUncaughtExceptionHandler((thread, ex) -> {
+            Log.e(TAG, "FATAL CRASH", ex);
+            runOnUiThread(() -> {
+                Toast.makeText(this, "CRASH: " + ex.getMessage(), Toast.LENGTH_LONG).show();
+                tvStatus.setText("CRASH: " + ex.getMessage());
+            });
+            // Don't kill process immediately so user can see toast
+            try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
+        });
+
         surfaceView = findViewById(R.id.surfaceView);
         glSurfaceView = findViewById(R.id.glSurfaceView);
         statusDot = findViewById(R.id.statusDot);
