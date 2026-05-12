@@ -262,19 +262,6 @@ public final class MTKDecoderFix {
                 } while (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED
                       || outIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED);
 
-            } catch (InterruptedException e) {
-                // Expected on shutdown
-                break;
-            } catch (IllegalStateException e) {
-                Log.e(TAG, "Decoder error: " + e.getMessage());
-                if (callback != null) callback.onDecoderError(e);
-                // Try software fallback
-                if (!useSoftwareFallback) {
-                    useSoftwareFallback = true;
-                    restartWithSoftware();
-                    return;
-                }
-                break;
             } catch (MediaCodec.CodecException e) {
                 Log.e(TAG, "Codec error: " + e.getDiagnosticInfo());
                 if (e.isRecoverable()) {
@@ -298,6 +285,19 @@ public final class MTKDecoderFix {
                     }
                     break;
                 }
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "Decoder error: " + e.getMessage());
+                if (callback != null) callback.onDecoderError(e);
+                // Try software fallback
+                if (!useSoftwareFallback) {
+                    useSoftwareFallback = true;
+                    restartWithSoftware();
+                    return;
+                }
+                break;
+            } catch (InterruptedException e) {
+                // Expected on shutdown
+                break;
             }
         }
 
