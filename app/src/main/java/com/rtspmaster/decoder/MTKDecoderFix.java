@@ -72,7 +72,7 @@ public final class MTKDecoderFix {
     public boolean configure(boolean forceSoftware) {
         this.useSoftwareFallback = forceSoftware;
         if (outputSurface == null || spsData == null || ppsData == null) return false;
-        if (videoWidth <= 0) { videoWidth = 1920; videoHeight = 1080; }
+        if (videoWidth <= 0) { videoWidth = 720; videoHeight = 1280; }
         try {
             callbackThread = new HandlerThread("MTKDecoder-CB", android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
             callbackThread.start();

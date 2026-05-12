@@ -234,7 +234,7 @@ public final class DecoderStrategyManager {
             @Override
             public void onSdpParsed(byte[] sps, byte[] pps, int width, int height) {
                 mtkDecoder.setSpsAndPps(sps, pps);
-                mtkDecoder.setVideoDimensions(width, height);
+                mtkDecoder.setVideoDimensions(720, 1280); // Hardcoded test
                 mtkDecoder.setSurface(decoderSurface);
                 mtkDecoder.configure(useSoftwareFallback);
             }
