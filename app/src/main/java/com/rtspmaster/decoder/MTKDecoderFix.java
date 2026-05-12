@@ -51,6 +51,7 @@ public final class MTKDecoderFix {
     private final AtomicInteger feedPhase = new AtomicInteger(0);
     private boolean useSoftwareFallback = false;
     private String activeCodecName = null;
+    private long firstTimestamp = -1;
     private final LinkedBlockingQueue<Integer> inputBufferQueue = new LinkedBlockingQueue<>();
 
     public MTKDecoderFix(DeviceProfiler profiler, DecoderCallback callback) {
@@ -116,6 +117,7 @@ public final class MTKDecoderFix {
                 }
                 @Override public void onOutputBufferAvailable(@NonNull MediaCodec c, int idx, @NonNull MediaCodec.BufferInfo info) {
                     try {
+                        Log.v(TAG, "Output buffer ready! idx=" + idx + " size=" + info.size + " pts=" + info.presentationTimeUs);
                         c.releaseOutputBuffer(idx, true);
                         if (callback != null) callback.onFrameRendered();
                         if (!firstFrameFired.getAndSet(true) && callback != null) callback.onFirstFrame();
@@ -151,8 +153,10 @@ public final class MTKDecoderFix {
     public void feedNalUnit(byte[] nalData, long rtpTimestamp) {
         if (!isStarted.get() || decoder == null) return;
         
-        // Fix 1: Convert 90kHz RTP timestamp to microseconds
+        // Fix 1: Convert 90kHz RTP timestamp to microseconds and NORMALIZE
         long ptsUs = (rtpTimestamp * 1000000L) / 90000L;
+        if (firstTimestamp == -1) firstTimestamp = ptsUs;
+        long normalizedPts = ptsUs - firstTimestamp;
 
         int nalType = getNalType(nalData);
         if (feedPhase.get() == 3) {
@@ -165,7 +169,10 @@ public final class MTKDecoderFix {
             idx = inputBufferQueue.poll(50, TimeUnit.MILLISECONDS); 
         } catch (InterruptedException e) { return; }
         
-        if (idx == null) return;
+        if (idx == null) {
+            Log.w(TAG, "No input buffer available (timeout)");
+            return;
+        }
         try {
             ByteBuffer buf = decoder.getInputBuffer(idx);
             if (buf == null) return;
@@ -187,7 +194,7 @@ public final class MTKDecoderFix {
                 buf.put(nalData);
             }
             
-            decoder.queueInputBuffer(idx, 0, buf.position(), ptsUs, flags);
+            decoder.queueInputBuffer(idx, 0, buf.position(), normalizedPts, flags);
         } catch (IllegalStateException e) { Log.w(TAG, "Feed error", e); }
     }
 
