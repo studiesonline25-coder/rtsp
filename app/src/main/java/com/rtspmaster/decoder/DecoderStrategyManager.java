@@ -50,6 +50,8 @@ public final class DecoderStrategyManager {
 
     private int currentStrategy = -1;
     private String rtspUrl;
+    private boolean useSoftwareFallback = false;
+    private int lowFpsCount = 0;
 
     // Tier 3
     private MTKDecoderFix mtkDecoder;

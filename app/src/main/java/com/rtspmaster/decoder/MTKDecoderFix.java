@@ -66,7 +66,8 @@ public final class MTKDecoderFix {
     public boolean isUsingSoftwareFallback() { return useSoftwareFallback; }
     public boolean isReady() { return isConfigured.get() && isStarted.get() && feedPhase.get() >= 3; }
 
-    public boolean configure() {
+    public boolean configure(boolean forceSoftware) {
+        this.useSoftwareFallback = forceSoftware;
         if (outputSurface == null || spsData == null || ppsData == null) return false;
         if (videoWidth <= 0) { videoWidth = 1920; videoHeight = 1080; }
         try {
@@ -76,6 +77,7 @@ public final class MTKDecoderFix {
 
             String codecName = selectCodec();
             activeCodecName = codecName;
+            Log.i(TAG, "Selected Codec: " + codecName + (useSoftwareFallback ? " (SOFTWARE)" : " (HARDWARE)"));
             decoder = MediaCodec.createByCodecName(codecName);
 
             MediaFormat fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, videoWidth, videoHeight);
