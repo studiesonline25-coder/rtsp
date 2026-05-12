@@ -20,6 +20,7 @@ public final class NALAssembler {
     private ByteArrayOutputStream fuaBuffer;
     private int fuaNri, fuaType;
     private boolean fuaStarted = false;
+    private int lastSeqNum = -1;
 
     public NALAssembler(NALCallback callback) {
         this.callback = callback;
@@ -75,6 +76,18 @@ public final class NALAssembler {
         int csrcCount = packet[offset] & 0x0F;
         boolean marker = ((packet[offset + 1] >> 7) & 1) == 1;
         int seqNum = ((packet[offset + 2] & 0xFF) << 8) | (packet[offset + 3] & 0xFF);
+        
+        // Sequence checking to prevent corruption
+        if (lastSeqNum != -1) {
+            int expected = (lastSeqNum + 1) & 0xFFFF;
+            if (seqNum != expected) {
+                int lost = (seqNum - expected + 0x10000) & 0xFFFF;
+                Log.w(TAG, "Packet loss detected! Lost=" + lost + " seq=" + seqNum);
+                reset(); // Wipe the current partial NAL
+            }
+        }
+        lastSeqNum = seqNum;
+
         long timestamp = ((long)(packet[offset + 4] & 0xFF) << 24) |
                           ((long)(packet[offset + 5] & 0xFF) << 16) |
                           ((long)(packet[offset + 6] & 0xFF) << 8) |
@@ -140,7 +153,7 @@ public final class NALAssembler {
         // Append fragment data (skip FU indicator + FU header = 2 bytes)
         fuaBuffer.write(data, offset + 2, length - 2);
 
-        if (endBit || marker) {
+        if (endBit) {
             byte[] nal = fuaBuffer.toByteArray();
             deliverNal(nal, timestamp, fuaType);
             fuaBuffer = null;
@@ -150,6 +163,9 @@ public final class NALAssembler {
 
     private void deliverNal(byte[] nal, long timestamp, int nalType) {
         if (callback != null) {
+            if (nalType == 7 || nalType == 8 || nalType == 5) {
+                Log.d(TAG, "Delivering NAL type=" + nalType + " size=" + nal.length);
+            }
             callback.onNalUnit(nal, timestamp, nalType);
         }
     }
