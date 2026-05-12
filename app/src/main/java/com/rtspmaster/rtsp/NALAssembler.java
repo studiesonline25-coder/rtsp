@@ -233,25 +233,28 @@ public final class NALAssembler {
 
             case NAL_IDR:
                 // ★ THE GOLDEN RULE ★
-                // Combine SPS + PPS + AUD + SEI + IDR into ONE buffer
+                // Combine AUD + SPS + PPS + SEI + IDR into ONE buffer (Standard Order)
                 if (savedSps != null && savedPps != null) {
-                    int totalLen = savedSps.length + savedPps.length 
-                                 + savedAud.length + savedSei.length 
-                                 + nalWithStartCode.length;
+                    int totalLen = savedAud.length + savedSps.length + savedPps.length 
+                                 + savedSei.length + nalWithStartCode.length;
                     byte[] combined = new byte[totalLen];
                     int pos = 0;
 
+                    if (savedAud.length > 0) {
+                        System.arraycopy(savedAud, 0, combined, pos, savedAud.length);
+                        pos += savedAud.length;
+                    }
                     System.arraycopy(savedSps, 0, combined, pos, savedSps.length);
                     pos += savedSps.length;
                     System.arraycopy(savedPps, 0, combined, pos, savedPps.length);
                     pos += savedPps.length;
-                    System.arraycopy(savedAud, 0, combined, pos, savedAud.length);
-                    pos += savedAud.length;
-                    System.arraycopy(savedSei, 0, combined, pos, savedSei.length);
-                    pos += savedSei.length;
+                    if (savedSei.length > 0) {
+                        System.arraycopy(savedSei, 0, combined, pos, savedSei.length);
+                        pos += savedSei.length;
+                    }
                     System.arraycopy(nalWithStartCode, 0, combined, pos, nalWithStartCode.length);
 
-                    Log.i(TAG, "★ GOLDEN RULE: Combined SPS+PPS+IDR = " + totalLen + " bytes");
+                    Log.i(TAG, "★ GOLDEN RULE: Combined AUD+SPS+PPS+SEI+IDR = " + totalLen + " bytes");
                     deliverNal(combined, timestamp, NAL_IDR);
 
                     // Send SPS/PPS only once, then null them out (exactly like the reference)
