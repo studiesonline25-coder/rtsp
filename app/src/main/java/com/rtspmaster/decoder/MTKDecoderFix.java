@@ -147,7 +147,7 @@ public final class MTKDecoderFix {
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Configure failed", e);
-            if (!useSoftwareFallback) { useSoftwareFallback = true; return configure(); }
+            if (!useSoftwareFallback) { useSoftwareFallback = true; return configure(useSoftwareFallback); }
             return false;
         }
     }
@@ -235,7 +235,7 @@ public final class MTKDecoderFix {
         return best != null ? best : "OMX.google.h264.decoder";
     }
 
-    private void restartWithSoftware() { release(); try { Thread.sleep(200); configure(); } catch (Exception ignored) {} }
+    private void restartWithSoftware() { release(); try { Thread.sleep(200); configure(useSoftwareFallback); } catch (Exception ignored) {} }
 
     private static byte[] withStartCode(byte[] nal) {
         if (nal == null) return START_CODE;
