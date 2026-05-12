@@ -7,7 +7,6 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.util.Log;
 import android.view.Surface;
-import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 
 import com.rtspmaster.forward.StreamForwarder;
@@ -15,15 +14,12 @@ import com.rtspmaster.rtsp.NALAssembler;
 import com.rtspmaster.rtsp.RTSPClient;
 
 /**
- * Master Orchestrator — Intelligent Decoder Strategy Manager.
+ * Master Orchestrator — Decoder Strategy Manager.
  * 
- * Selects the best decoder strategy based on device profile:
- *   STRATEGY_VLC (Tier 1) — LibVLC software decode, safest
- *   STRATEGY_EXOPLAYER (Tier 2) — ExoPlayer Media3 RTSP
- *   STRATEGY_MEDIACODEC_GL (Tier 3a) — Raw MediaCodec + OES shader
- *   STRATEGY_MEDIACODEC_RAW (Tier 3b) — Raw MediaCodec + SurfaceView
- *
- * Auto-detects green frames and falls through strategies.
+ * Wires RTSPClient → NALAssembler → MTKDecoderFix pipeline.
+ * 
+ * The NALAssembler now handles the "Golden Rule" (combining SPS+PPS+IDR),
+ * so this class is simplified — it just passes data through.
  */
 public final class DecoderStrategyManager {
     private static final String TAG = "StrategyMgr";
@@ -53,7 +49,7 @@ public final class DecoderStrategyManager {
     private boolean useSoftwareFallback = false;
     private int lowFpsCount = 0;
 
-    // Tier 3
+    // Pipeline components
     private MTKDecoderFix mtkDecoder;
     private RTSPClient rtspClient;
     private NALAssembler nalAssembler;
@@ -77,7 +73,7 @@ public final class DecoderStrategyManager {
             }
             @Override public void onLowFps() {
                 Log.w(TAG, "Low FPS detected. Count: " + (++lowFpsCount));
-                if (lowFpsCount >= 2 && !useSoftwareFallback) {
+                if (lowFpsCount >= 3 && !useSoftwareFallback) {
                     Log.e(TAG, "Hardware decoder stalling. Falling back to SOFTWARE.");
                     useSoftwareFallback = true;
                     lowFpsCount = 0;
@@ -98,24 +94,17 @@ public final class DecoderStrategyManager {
     public StreamForwarder getForwarder() { return forwarder; }
     public int getCurrentStrategy() { return currentStrategy; }
 
-    /**
-     * Select initial strategy. Since we removed heavy libs, 
-     * we always use the surgical MediaCodec + GL strategy.
-     */
     public int selectInitialStrategy() {
         return STRATEGY_MEDIACODEC_GL;
     }
 
-    /**
-     * Start playing with the given strategy.
-     */
     public void start(String url, int strategy) {
         this.rtspUrl = url;
         stopCurrent();
 
         currentStrategy = strategy;
         String name = strategyName(strategy);
-        Log.i(TAG, "Starting Lightweight strategy: " + name + " (Software: " + useSoftwareFallback + ")");
+        Log.i(TAG, "Starting strategy: " + name + " (Software: " + useSoftwareFallback + ")");
         if (callback != null) {
             callback.onStatusChanged("Connecting...");
             callback.onDecoderChanged(name, strategy);
@@ -128,12 +117,6 @@ public final class DecoderStrategyManager {
         } else {
             startMediaCodecRaw(url);
         }
-
-        // Always use green detector for hardware
-        greenDetector.start((sampleIdx, pct) -> {
-            Log.w(TAG, "Green frames detected! Attempting Raw switch...");
-            mainHandler.post(() -> start(rtspUrl, STRATEGY_MEDIACODEC_RAW));
-        });
     }
 
     public void stop() {
@@ -145,7 +128,7 @@ public final class DecoderStrategyManager {
 
     public void reconnect() {
         if (rtspUrl != null) {
-            Log.i(TAG, "Reconnecting in 5s...");
+            Log.i(TAG, "Reconnecting...");
             start(rtspUrl, currentStrategy);
         }
     }
@@ -165,9 +148,9 @@ public final class DecoderStrategyManager {
         if (glRenderer == null) {
             glRenderer = new RTSPGLRenderer();
         }
-        
+
         glRenderer.setOnSurfaceReadyListener(decoderSurface -> {
-            startRawMediaCodec(url, decoderSurface);
+            startPipeline(url, decoderSurface);
         });
 
         if (glSurfaceView != null && !isRendererSet) {
@@ -185,10 +168,15 @@ public final class DecoderStrategyManager {
                 if (surfaceView != null) surfaceView.setVisibility(android.view.View.VISIBLE);
             });
         }
-        startRawMediaCodec(url, currentSurface);
+        startPipeline(url, currentSurface);
     }
 
-    private void startRawMediaCodec(String url, Surface decoderSurface) {
+    /**
+     * The simplified pipeline:
+     *   RTSPClient (TCP) → NALAssembler (Golden Rule) → MTKDecoderFix → Surface
+     */
+    private void startPipeline(String url, Surface decoderSurface) {
+        // 1. Create decoder
         mtkDecoder = new MTKDecoderFix(profiler, new MTKDecoderFix.DecoderCallback() {
             @Override public void onFrameRendered() {
                 healthMonitor.onFrameRendered();
@@ -200,56 +188,61 @@ public final class DecoderStrategyManager {
                 healthMonitor.onError();
             }
             @Override public void onFormatChanged(int w, int h) {
-                Log.i(TAG, "Video: " + w + "x" + h);
+                Log.i(TAG, "Video format: " + w + "x" + h);
                 if (glRenderer != null) glRenderer.updateBufferSize(w, h);
             }
             @Override public void onFirstFrame() {
                 if (callback != null) {
-                    callback.onStatusChanged("Playing (Lightweight)");
+                    callback.onStatusChanged("Playing");
                     callback.onFirstFrame();
                 }
             }
         });
 
+        // 2. Create NAL assembler with "Golden Rule" combining
         nalAssembler = new NALAssembler((nalWithStartCode, timestamp, nalType) -> {
+            // Forward raw NAL data if forwarder is active
             if (forwarder.isRunning()) {
                 forwarder.forwardPacket(nalWithStartCode);
             }
 
-            if (nalType == 7) {
-                byte[] raw = new byte[nalWithStartCode.length - 4];
-                System.arraycopy(nalWithStartCode, 4, raw, 0, raw.length);
-                mtkDecoder.setSpsAndPps(raw, null);
-            } else if (nalType == 8) {
-                byte[] raw = new byte[nalWithStartCode.length - 4];
-                System.arraycopy(nalWithStartCode, 4, raw, 0, raw.length);
-                mtkDecoder.setSpsAndPps(null, raw);
-            }
+            // Feed directly to decoder — NALAssembler already combined SPS+PPS+IDR
             if (mtkDecoder.isReady()) {
                 mtkDecoder.feedNalUnit(nalWithStartCode, timestamp);
             }
         });
 
+        // 3. Create RTSP client (TCP Interleaved)
         rtspClient = new RTSPClient(new RTSPClient.RTSPCallback() {
             @Override
             public void onSdpParsed(byte[] sps, byte[] pps, int width, int height) {
-                mtkDecoder.setSpsAndPps(sps, pps);
-                mtkDecoder.setVideoDimensions(720, 1280); // Hardcoded test
+                Log.i(TAG, "SDP: SPS=" + (sps != null ? sps.length : 0)
+                        + "b PPS=" + (pps != null ? pps.length : 0)
+                        + "b  " + width + "x" + height);
+                if (sps != null && pps != null) {
+                    mtkDecoder.setSpsAndPps(sps, pps);
+                }
+                if (width > 0 && height > 0) {
+                    mtkDecoder.setVideoDimensions(width, height);
+                }
                 mtkDecoder.setSurface(decoderSurface);
                 mtkDecoder.configure(useSoftwareFallback);
             }
 
             @Override
-            public void onRtpPacket(byte[] data, int offset, int length, int channel) {
+            public void onVideoNalUnit(byte[] data, int offset, int length, long timestamp) {
+                // Raw RTP packet from TCP — pass to NALAssembler for parsing
                 nalAssembler.processRtpPacket(data, offset, length);
             }
 
             @Override
             public void onDisconnected(String reason) {
+                Log.w(TAG, "Disconnected: " + reason);
                 mainHandler.post(() -> reconnect());
             }
         });
 
+        // 4. Launch RTSP thread
         rtspThread = new HandlerThread("RTSP-Client");
         rtspThread.start();
         new Handler(rtspThread.getLooper()).post(() -> {
@@ -270,11 +263,9 @@ public final class DecoderStrategyManager {
         if (mtkDecoder != null) { mtkDecoder.release(); mtkDecoder = null; }
         if (rtspClient != null) { rtspClient.disconnect(); rtspClient = null; }
         if (nalAssembler != null) { nalAssembler.reset(); nalAssembler = null; }
-        // Keep glRenderer alive to avoid setRenderer crashes on reconnect
         if (rtspThread != null) { rtspThread.quitSafely(); rtspThread = null; }
     }
 
-    /** Called from SurfaceHolder.Callback.surfaceChanged */
     public void onSurfaceReady(Surface surface) {
         this.currentSurface = surface;
         Log.i(TAG, "Surface ready");
@@ -286,7 +277,7 @@ public final class DecoderStrategyManager {
 
     public static String strategyName(int s) {
         switch (s) {
-            case STRATEGY_MEDIACODEC_GL: return "MediaCodec+GL (Light)";
+            case STRATEGY_MEDIACODEC_GL: return "MediaCodec+GL";
             case STRATEGY_MEDIACODEC_RAW: return "MediaCodec Raw";
             default: return "Lightweight";
         }
