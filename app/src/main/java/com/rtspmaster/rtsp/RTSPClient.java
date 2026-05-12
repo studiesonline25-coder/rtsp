@@ -36,16 +36,23 @@ public final class RTSPClient {
     }
 
     public void connect(String url) throws Exception {
-        URI uri = new URI(url);
-        String userInfo = uri.getUserInfo();
-        if (userInfo != null && userInfo.contains(":")) {
-            String[] parts = userInfo.split(":", 2);
-            username = parts[0];
-            password = parts[1];
+        Log.i(TAG, "Connecting to: " + url);
+        
+        // Robust Regex Parser for: rtsp://[user:pass@]host[:port][/path]
+        Pattern urlPattern = Pattern.compile("rtsp://(?:([^:]+):([^@]+)@)?([^:/]+)(?::(\\d+))?(.*)");
+        Matcher urlMatcher = urlPattern.matcher(url);
+        if (!urlMatcher.find()) {
+            throw new IllegalArgumentException("Invalid RTSP URL format");
         }
+        
+        username = urlMatcher.group(1);
+        password = urlMatcher.group(2);
+        String host = urlMatcher.group(3);
+        String portStr = urlMatcher.group(4);
+        int port = (portStr != null) ? Integer.parseInt(portStr) : 554;
+        String path = urlMatcher.group(5);
 
-        String host = uri.getHost();
-        int port = uri.getPort() > 0 ? uri.getPort() : 554;
+        Log.i(TAG, "Parsed: host=" + host + " port=" + port + " path=" + path);
 
         socket = new Socket();
         socket.connect(new InetSocketAddress(host, port), 10000);
@@ -177,14 +184,14 @@ public final class RTSPClient {
     }
 
     private String readLine() throws IOException {
-        StringBuilder sb = new StringBuilder();
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
         int c;
         while ((c = in.read()) >= 0) {
-            if (c == '\r') { in.read(); break; } // skip \n
             if (c == '\n') break;
-            sb.append((char) c);
+            if (c != '\r') baos.write(c);
         }
-        return c < 0 ? null : sb.toString();
+        if (c < 0 && baos.size() == 0) return null;
+        return baos.toString();
     }
 
     private void parseSDP(String sdp) {

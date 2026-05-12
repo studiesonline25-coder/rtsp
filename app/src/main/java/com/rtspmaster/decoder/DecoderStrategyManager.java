@@ -74,7 +74,12 @@ public final class DecoderStrategyManager {
                 if (callback != null) callback.onFpsUpdate(fps);
             }
             @Override public void onLowFps() {
-                Log.w(TAG, "Low FPS detected — triggering reconnect");
+                Log.w(TAG, "Low FPS detected. Count: " + (++lowFpsCount));
+                if (lowFpsCount >= 2 && !useSoftwareFallback) {
+                    Log.e(TAG, "Hardware decoder stalling. Falling back to SOFTWARE.");
+                    useSoftwareFallback = true;
+                    lowFpsCount = 0;
+                }
                 mainHandler.post(() -> reconnect());
             }
             @Override public void onTooManyErrors() {
@@ -108,7 +113,7 @@ public final class DecoderStrategyManager {
 
         currentStrategy = strategy;
         String name = strategyName(strategy);
-        Log.i(TAG, "Starting Lightweight strategy: " + name);
+        Log.i(TAG, "Starting Lightweight strategy: " + name + " (Software: " + useSoftwareFallback + ")");
         if (callback != null) {
             callback.onStatusChanged("Connecting...");
             callback.onDecoderChanged(name, strategy);
@@ -225,7 +230,7 @@ public final class DecoderStrategyManager {
                 mtkDecoder.setSpsAndPps(sps, pps);
                 mtkDecoder.setVideoDimensions(width, height);
                 mtkDecoder.setSurface(decoderSurface);
-                mtkDecoder.configure();
+                mtkDecoder.configure(useSoftwareFallback);
             }
 
             @Override
