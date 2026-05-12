@@ -215,11 +215,14 @@ public final class DecoderStrategyManager {
                 forwarder.forwardPacket(nalWithStartCode);
             }
 
-            if (nalType == 7 || nalType == 8) {
+            if (nalType == 7) {
                 byte[] raw = new byte[nalWithStartCode.length - 4];
                 System.arraycopy(nalWithStartCode, 4, raw, 0, raw.length);
-                if (nalType == 7) mtkDecoder.setSpsAndPps(raw, null);
-                else mtkDecoder.setSpsAndPps(null, raw); // Store PPS too
+                mtkDecoder.setSpsAndPps(raw, null);
+            } else if (nalType == 8) {
+                byte[] raw = new byte[nalWithStartCode.length - 4];
+                System.arraycopy(nalWithStartCode, 4, raw, 0, raw.length);
+                mtkDecoder.setSpsAndPps(null, raw);
             }
             if (mtkDecoder.isReady()) {
                 mtkDecoder.feedNalUnit(nalWithStartCode, timestamp);

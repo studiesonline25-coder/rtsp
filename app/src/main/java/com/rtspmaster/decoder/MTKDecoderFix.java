@@ -60,11 +60,14 @@ public final class MTKDecoderFix {
     }
 
     public void setSurface(Surface surface) { this.outputSurface = surface; }
-    public void setSpsAndPps(byte[] sps, byte[] pps) { this.spsData = sps; this.ppsData = pps; }
+    public void setSpsAndPps(byte[] sps, byte[] pps) { 
+        if (sps != null) this.spsData = sps; 
+        if (pps != null) this.ppsData = pps; 
+    }
     public void setVideoDimensions(int w, int h) { this.videoWidth = w; this.videoHeight = h; }
     public String getActiveCodecName() { return activeCodecName; }
     public boolean isUsingSoftwareFallback() { return useSoftwareFallback; }
-    public boolean isReady() { return isConfigured.get() && isStarted.get() && feedPhase.get() >= 3; }
+    public boolean isReady() { return isConfigured.get() && isStarted.get(); }
 
     public boolean configure(boolean forceSoftware) {
         this.useSoftwareFallback = forceSoftware;
@@ -161,9 +164,10 @@ public final class MTKDecoderFix {
         long normalizedPts = ptsUs - firstTimestamp;
 
         int nalType = getNalType(nalData);
-        if (feedPhase.get() == 3) {
-            // Settle phase finished, start feeding everything
-            feedPhase.set(4);
+        if (feedPhase.get() < 3) {
+            if (nalType == 7) feedPhase.set(1);
+            else if (nalType == 8 && feedPhase.get() >= 1) feedPhase.set(2);
+            else if (nalType == 5 && feedPhase.get() >= 2) feedPhase.set(3);
         }
         
         Integer idx;
