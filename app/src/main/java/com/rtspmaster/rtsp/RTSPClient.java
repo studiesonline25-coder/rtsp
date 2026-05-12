@@ -22,8 +22,10 @@ public final class RTSPClient {
     }
 
     private Socket socket;
+    private DatagramSocket rtpSocket;
     private OutputStream out;
     private InputStream in;
+    private int rtpPort;
     private int cseq = 1;
     private String sessionId;
     private volatile boolean running = false;
@@ -76,9 +78,13 @@ public final class RTSPClient {
 
         parseSDP(descResp);
 
-        // SETUP — TCP interleaved
+        // SETUP — UDP
+        rtpSocket = new DatagramSocket();
+        rtpPort = rtpSocket.getLocalPort();
+        socket.setSoTimeout(15000);
+        
         String trackUrl = extractTrackUrl(descResp, url);
-        String setupHeader = "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n";
+        String setupHeader = "Transport: RTP/AVP;unicast;client_port=" + rtpPort + "-" + (rtpPort + 1) + "\r\n";
         if (username != null) {
             setupHeader += "Authorization: Basic " + Base64.encodeToString((username + ":" + password).getBytes(), Base64.NO_WRAP) + "\r\n";
         }
@@ -93,51 +99,44 @@ public final class RTSPClient {
         sendRequest("PLAY", url, playHeader);
 
         running = true;
-        Log.i(TAG, "RTSP connected, receiving RTP over TCP");
+        Log.i(TAG, "RTSP connected via UDP on port " + rtpPort);
     }
 
     private long packetCount = 0;
     private final byte[] readBuffer = new byte[2048 * 1024]; // 2MB pre-allocated buffer
 
-    /** Main receive loop — call on dedicated thread. */
+    /** Main receive loop — UDP version. */
     public void receiveLoop() {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
-        byte[] header = new byte[4];
+        byte[] buffer = new byte[2048];
+        DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
         try {
+            rtpSocket.setSoTimeout(10000);
             while (running) {
-                // TCP interleaved: $<channel><length_hi><length_lo><data>
-                int b = in.read();
-                if (b < 0) break;
-                if (b != '$') continue;
-
-                readFully(in, header, 0, 3);
-                int channel = header[0] & 0xFF;
-                int length = ((header[1] & 0xFF) << 8) | (header[2] & 0xFF);
-                if (length <= 0 || length > readBuffer.length) continue;
-
-                // Reuse pre-allocated buffer for zero-allocation performance
-                readFully(in, readBuffer, 0, length);
-
-                if (channel == 0 && callback != null) {
-                    packetCount++;
-                    if (packetCount % 500 == 0) {
-                        Log.d(TAG, "High-Perf RTP: " + packetCount + " packets (No drops)");
+                try {
+                    rtpSocket.receive(packet);
+                    int length = packet.getLength();
+                    if (length > 0 && callback != null) {
+                        packetCount++;
+                        if (packetCount % 500 == 0) {
+                            Log.d(TAG, "UDP RTP: " + packetCount + " packets received");
+                        }
+                        // Deliver a copy of the payload
+                        byte[] data = new byte[length];
+                        System.arraycopy(buffer, 0, data, 0, length);
+                        callback.onRtpPacket(data, 0, length, 0);
                     }
-                    
-                    // Deliver a copy to the assembler (Assembler handles its own fragmentation)
-                    byte[] packetCopy = new byte[length];
-                    System.arraycopy(readBuffer, 0, packetCopy, 0, length);
-                    callback.onRtpPacket(packetCopy, 0, length, channel);
+                } catch (SocketTimeoutException e) {
+                    if (running) Log.w(TAG, "UDP Packet timeout");
                 }
             }
-        } catch (SocketTimeoutException e) {
-            Log.w(TAG, "Socket timeout");
         } catch (IOException e) {
-            if (running) Log.e(TAG, "Receive error", e);
+            if (running) Log.e(TAG, "UDP Receive error", e);
         } finally {
             running = false;
-            Log.i(TAG, "RTSP Receiver Loop Ended. Total packets: " + packetCount);
+            Log.i(TAG, "UDP Receiver Loop Ended. Total packets: " + packetCount);
             if (callback != null) callback.onDisconnected("Stream ended");
+            try { rtpSocket.close(); } catch (Exception ignored) {}
         }
     }
 
