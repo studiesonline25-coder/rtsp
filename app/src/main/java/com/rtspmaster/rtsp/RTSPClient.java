@@ -242,7 +242,8 @@ public final class RTSPClient {
     private void sendKeepAlive() {
         try {
             String authToken = useDigestAuth ? makeDigestAuth("GET_PARAMETER", "") : null;
-            String req = "GET_PARAMETER * RTSP/1.0" + CRLF
+            // Use the host address instead of '*' to avoid 'invalid path' errors on some servers
+            String req = "GET_PARAMETER rtsp://" + socket.getInetAddress().getHostAddress() + "/ RTSP/1.0" + CRLF
                     + "CSeq: " + (++cseq) + CRLF
                     + "User-Agent: " + USER_AGENT + CRLF
                     + "Session: " + sessionId + CRLF;

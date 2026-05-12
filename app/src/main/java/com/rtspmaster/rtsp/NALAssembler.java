@@ -45,6 +45,7 @@ public final class NALAssembler {
     private byte[] savedPps = null;
     private byte[] savedAud = new byte[0];
     private byte[] savedSei = new byte[0];
+    private boolean waitingForFirstIdr = true; // Drop P-frames until first IDR arrives
 
     public NALAssembler(NALCallback callback) {
         this.callback = callback;
@@ -232,6 +233,7 @@ public final class NALAssembler {
                 break;
 
             case NAL_IDR:
+                waitingForFirstIdr = false; // We found the start of the stream
                 // ★ THE GOLDEN RULE ★
                 // Combine AUD + SPS + PPS + SEI + IDR into ONE buffer (Standard Order)
                 if (savedSps != null && savedPps != null) {
@@ -263,27 +265,19 @@ public final class NALAssembler {
                     savedSei = new byte[0];
                     savedAud = new byte[0];
                 } else {
-                    // No saved SPS/PPS — deliver IDR alone (subsequent keyframes)
-                    if (savedAud.length == 0 && savedSei.length == 0) {
-                        deliverNal(nalWithStartCode, timestamp, NAL_IDR);
-                    } else {
-                        // Prepend AUD + SEI
-                        int totalLen = savedAud.length + savedSei.length + nalWithStartCode.length;
-                        byte[] combined = new byte[totalLen];
-                        int pos = 0;
-                        System.arraycopy(savedAud, 0, combined, pos, savedAud.length);
-                        pos += savedAud.length;
-                        System.arraycopy(savedSei, 0, combined, pos, savedSei.length);
-                        pos += savedSei.length;
-                        System.arraycopy(nalWithStartCode, 0, combined, pos, nalWithStartCode.length);
-                        deliverNal(combined, timestamp, NAL_IDR);
-                        savedSei = new byte[0];
-                        savedAud = new byte[0];
-                    }
+                    // Subsequent IDR slices or subsequent IDR frames
+                    deliverNal(nalWithStartCode, timestamp, NAL_IDR);
                 }
                 break;
 
             default:
+                // DROP P-frames until we receive our first valid IDR frame
+                if (waitingForFirstIdr) {
+                    // Log only occasionally to avoid flooding
+                    if (deliveryCount % 100 == 0) Log.d(TAG, "Dropping P-frame while waiting for IDR");
+                    break;
+                }
+
                 // Regular P/B slices — deliver with AUD/SEI if present
                 if (savedAud.length == 0 && savedSei.length == 0) {
                     deliverNal(nalWithStartCode, timestamp, nalType);
