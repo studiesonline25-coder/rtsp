@@ -80,10 +80,19 @@ public final class MTKDecoderFix {
             MediaFormat fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, videoWidth, videoHeight);
             fmt.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
             fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1048576);
-            fmt.setInteger(MediaFormat.KEY_PRIORITY, 0);
+            fmt.setInteger(MediaFormat.KEY_PRIORITY, 0); // Real-time priority
             fmt.setInteger(MediaFormat.KEY_OPERATING_RATE, 30);
+            
+            // Fix 3: Force Baseline Profile for maximum stability on MTK
+            fmt.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline);
+            fmt.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31);
+
             if (profiler.isMediaTek()) {
-                try { fmt.setInteger("vendor.mtk-vdec.input-buf-count", 8); } catch (Exception ignored) {}
+                try { 
+                    fmt.setInteger("vendor.mtk-vdec.input-buf-count", 8); 
+                    fmt.setInteger("vendor.mtk-vdec.wait-key-frame", 1);
+                    fmt.setInteger("low-latency", 1);
+                } catch (Exception ignored) {}
             }
             fmt.setByteBuffer("csd-0", ByteBuffer.wrap(withStartCode(spsData)));
             fmt.setByteBuffer("csd-1", ByteBuffer.wrap(withStartCode(ppsData)));
@@ -161,13 +170,24 @@ public final class MTKDecoderFix {
             ByteBuffer buf = decoder.getInputBuffer(idx);
             if (buf == null) return;
             buf.clear();
-            buf.put(nalData);
             
             int flags = 0;
-            if (nalType == 7 || nalType == 8) flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
-            else if (nalType == 5) flags = MediaCodec.BUFFER_FLAG_KEY_FRAME;
+            if (nalType == 7 || nalType == 8) {
+                flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
+                buf.put(nalData);
+            } else if (nalType == 5) {
+                flags = MediaCodec.BUFFER_FLAG_KEY_FRAME;
+                // Fix 4: Prepend SPS/PPS to IDR frame (Surgical MTK fix)
+                if (spsData != null && ppsData != null) {
+                    buf.put(withStartCode(spsData));
+                    buf.put(withStartCode(ppsData));
+                }
+                buf.put(nalData);
+            } else {
+                buf.put(nalData);
+            }
             
-            decoder.queueInputBuffer(idx, 0, nalData.length, ptsUs, flags);
+            decoder.queueInputBuffer(idx, 0, buf.position(), ptsUs, flags);
         } catch (IllegalStateException e) { Log.w(TAG, "Feed error", e); }
     }
 
