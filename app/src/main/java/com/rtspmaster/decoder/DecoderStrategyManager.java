@@ -173,7 +173,7 @@ public final class DecoderStrategyManager {
 
     /**
      * The simplified pipeline:
-     *   RTSPClient (TCP) → NALAssembler (Golden Rule) → MTKDecoderFix → Surface
+     *   RTSPClient (TCP) → NALAssembler (Golden Rule) → FrameQueue → MTKDecoderFix → Surface
      */
     private void startPipeline(String url, Surface decoderSurface) {
         // 1. Create decoder
@@ -199,14 +199,14 @@ public final class DecoderStrategyManager {
             }
         });
 
-        // 2. Create NAL assembler with "Golden Rule" combining
+        // 2. Create NAL assembler — Golden Rule combines SPS+PPS+IDR into one buffer
         nalAssembler = new NALAssembler((nalWithStartCode, timestamp, nalType) -> {
             // Forward raw NAL data if forwarder is active
             if (forwarder.isRunning()) {
                 forwarder.forwardPacket(nalWithStartCode);
             }
 
-            // Feed directly to decoder — NALAssembler already combined SPS+PPS+IDR
+            // Feed directly to decoder's frame queue
             if (mtkDecoder.isReady()) {
                 mtkDecoder.feedNalUnit(nalWithStartCode, timestamp);
             }
@@ -219,6 +219,8 @@ public final class DecoderStrategyManager {
                 Log.i(TAG, "SDP: SPS=" + (sps != null ? sps.length : 0)
                         + "b PPS=" + (pps != null ? pps.length : 0)
                         + "b  " + width + "x" + height);
+                // Store SPS/PPS for the NALAssembler's Golden Rule
+                // (they will be combined with the first IDR frame)
                 if (sps != null && pps != null) {
                     mtkDecoder.setSpsAndPps(sps, pps);
                 }
@@ -238,7 +240,7 @@ public final class DecoderStrategyManager {
             @Override
             public void onDisconnected(String reason) {
                 Log.w(TAG, "Disconnected: " + reason);
-                mainHandler.post(() -> reconnect());
+                mainHandler.postDelayed(() -> reconnect(), 3000);
             }
         });
 

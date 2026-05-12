@@ -4,29 +4,31 @@ import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 import android.media.MediaFormat;
-import android.os.Handler;
-import android.os.HandlerThread;
+import android.os.Build;
+import android.os.Process;
 import android.util.Log;
 import android.view.Surface;
-import androidx.annotation.NonNull;
 import java.nio.ByteBuffer;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Clean MediaCodec Decoder — No hacks, no double-injection.
- * 
- * Architecture:
- *   - SPS/PPS are provided via MediaFormat csd-0/csd-1 at configure time
- *   - NAL units arrive pre-combined from NALAssembler (SPS+PPS+IDR in one buffer)
- *   - The decoder just feeds what it receives — no manipulation needed
- *   - Async callback mode for non-blocking operation
+ * Production-grade MediaCodec Decoder — Synchronous mode.
+ *
+ * Modeled after alexvas VideoDecodeThread.kt:
+ *   - Uses SYNCHRONOUS dequeueInputBuffer/dequeueOutputBuffer (NOT async callbacks)
+ *   - Combined SPS+PPS+IDR buffers are flagged as KEY_FRAME (not CODEC_CONFIG)
+ *   - After queuing a keyframe, calls dequeueOutputBuffer multiple times
+ *     to handle both the format-change and the decoded frame
+ *   - Runs on a dedicated thread with VIDEO priority
  */
 public final class MTKDecoderFix {
     private static final String TAG = "MTKDecoderFix";
     private static final byte[] START_CODE = {0, 0, 0, 1};
+
+    private static final long DEQUEUE_INPUT_TIMEOUT_US = 500_000;  // 500ms
+    private static final long DEQUEUE_OUTPUT_TIMEOUT_US = 100_000; // 100ms
 
     public interface DecoderCallback {
         void onFrameRendered();
@@ -41,15 +43,32 @@ public final class MTKDecoderFix {
     private Surface outputSurface;
     private byte[] spsData, ppsData;
     private int videoWidth, videoHeight;
-    private HandlerThread callbackThread;
-    private Handler callbackHandler;
     private final AtomicBoolean isConfigured = new AtomicBoolean(false);
-    private final AtomicBoolean isStarted = new AtomicBoolean(false);
-    private final AtomicBoolean firstFrameFired = new AtomicBoolean(false);
+    private final AtomicBoolean isRunning = new AtomicBoolean(false);
+    private boolean firstFrameRendered = false;
     private boolean useSoftwareFallback = false;
     private String activeCodecName = null;
-    private long firstTimestamp = -1;
-    private final LinkedBlockingQueue<Integer> inputBufferQueue = new LinkedBlockingQueue<>();
+
+    // Frame queue: NAL units pushed by RTSP thread, consumed by decoder thread
+    private final ArrayBlockingQueue<FrameData> frameQueue = new ArrayBlockingQueue<>(120);
+
+    private Thread decoderThread;
+
+    private static class FrameData {
+        final byte[] data;
+        final int offset;
+        final int length;
+        final long timestampMs;
+        final boolean isKeyframe;
+
+        FrameData(byte[] data, int offset, int length, long timestampMs, boolean isKeyframe) {
+            this.data = data;
+            this.offset = offset;
+            this.length = length;
+            this.timestampMs = timestampMs;
+            this.isKeyframe = isKeyframe;
+        }
+    }
 
     public MTKDecoderFix(DeviceProfiler profiler, DecoderCallback callback) {
         this.profiler = profiler;
@@ -64,100 +83,46 @@ public final class MTKDecoderFix {
     public void setVideoDimensions(int w, int h) { this.videoWidth = w; this.videoHeight = h; }
     public String getActiveCodecName() { return activeCodecName; }
     public boolean isUsingSoftwareFallback() { return useSoftwareFallback; }
-    public boolean isReady() { return isConfigured.get() && isStarted.get(); }
+    public boolean isReady() { return isConfigured.get() && isRunning.get(); }
 
+    /**
+     * Configure and start the decoder. Launches the synchronous decode thread.
+     */
     public boolean configure(boolean forceSoftware) {
         this.useSoftwareFallback = forceSoftware;
         if (outputSurface == null || !outputSurface.isValid()) {
             Log.e(TAG, "Surface not valid!");
             return false;
         }
-        // SPS/PPS may arrive later via in-stream NAL units
         if (videoWidth <= 0) { videoWidth = 720; videoHeight = 1280; }
 
         Log.i(TAG, "Configuring: " + videoWidth + "x" + videoHeight
                 + " | Software: " + useSoftwareFallback
-                + " | Hardware: " + android.os.Build.HARDWARE);
+                + " | Hardware: " + Build.HARDWARE);
 
         try {
-            callbackThread = new HandlerThread("MTKDecoder-CB", android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
-            callbackThread.start();
-            callbackHandler = new Handler(callbackThread.getLooper());
-
             String codecName = selectCodec();
             activeCodecName = codecName;
             Log.i(TAG, "Selected Codec: " + codecName + (useSoftwareFallback ? " (SOFTWARE)" : " (HARDWARE)"));
+
             decoder = MediaCodec.createByCodecName(codecName);
 
             MediaFormat fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, videoWidth, videoHeight);
             fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1048576); // 1MB
-            fmt.setInteger(MediaFormat.KEY_PRIORITY, 0); // Real-time
+            fmt.setInteger(MediaFormat.KEY_ROTATION, 0);
 
-            // Provide SPS/PPS via csd if available at configure time
-            if (spsData != null && ppsData != null) {
-                fmt.setByteBuffer("csd-0", ByteBuffer.wrap(withStartCode(spsData)));
-                fmt.setByteBuffer("csd-1", ByteBuffer.wrap(withStartCode(ppsData)));
-                Log.i(TAG, "CSD provided: SPS=" + spsData.length + "b PPS=" + ppsData.length + "b");
-            }
-
-            // MTK-specific optimizations
-            if (profiler.isMediaTek()) {
-                try {
-                    fmt.setInteger("vendor.mtk-vdec.input-buf-count", 8);
-                    fmt.setInteger("low-latency", 1);
-                } catch (Exception ignored) {}
-            }
-
-            decoder.setCallback(new MediaCodec.Callback() {
-                @Override
-                public void onInputBufferAvailable(@NonNull MediaCodec c, int idx) {
-                    inputBufferQueue.offer(idx);
-                }
-
-                @Override
-                public void onOutputBufferAvailable(@NonNull MediaCodec c, int idx, @NonNull MediaCodec.BufferInfo info) {
-                    try {
-                        c.releaseOutputBuffer(idx, true);
-                        if (callback != null) callback.onFrameRendered();
-                        if (!firstFrameFired.getAndSet(true) && callback != null) {
-                            Log.i(TAG, "★ FIRST FRAME RENDERED ★");
-                            callback.onFirstFrame();
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "Output error", e);
-                    }
-                }
-
-                @Override
-                public void onError(@NonNull MediaCodec c, @NonNull MediaCodec.CodecException e) {
-                    Log.e(TAG, "Decoder error: " + e.getDiagnosticInfo(), e);
-                    if (!useSoftwareFallback) {
-                        useSoftwareFallback = true;
-                        restartWithSoftware();
-                    }
-                    if (callback != null) callback.onDecoderError(e);
-                }
-
-                @Override
-                public void onOutputFormatChanged(@NonNull MediaCodec c, @NonNull MediaFormat f) {
-                    int w = f.getInteger(MediaFormat.KEY_WIDTH);
-                    int h = f.getInteger(MediaFormat.KEY_HEIGHT);
-                    int stride = f.containsKey(MediaFormat.KEY_STRIDE) ? f.getInteger(MediaFormat.KEY_STRIDE) : w;
-                    int sliceH = f.containsKey(MediaFormat.KEY_SLICE_HEIGHT) ? f.getInteger(MediaFormat.KEY_SLICE_HEIGHT) : h;
-                    Log.i(TAG, "Format Changed: " + w + "x" + h + " (Stride: " + stride + "x" + sliceH + ")");
-                    if (callback != null) callback.onFormatChanged(stride, sliceH);
-                }
-            }, callbackHandler);
-
+            // Configure and start
             decoder.configure(fmt, outputSurface, null, 0);
             decoder.start();
             isConfigured.set(true);
-            isStarted.set(true);
-
-            // Brief settle time for MTK hardware
-            if (profiler.isMediaTek()) Thread.sleep(100);
 
             Log.i(TAG, "Decoder ready: " + codecName);
+
+            // Start the synchronous decode loop on a dedicated thread
+            isRunning.set(true);
+            decoderThread = new Thread(this::decodeLoop, "VideoDecoder");
+            decoderThread.start();
+
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Configure failed", e);
@@ -170,65 +135,211 @@ public final class MTKDecoderFix {
     }
 
     /**
-     * Feed a complete NAL unit to the decoder.
-     * 
-     * The NAL unit should already include start codes (00 00 00 01).
-     * Combined SPS+PPS+IDR buffers are handled natively by MediaCodec.
+     * Feed a complete NAL unit to the decoder via the frame queue.
+     * Called from the RTSP receive thread.
+     *
+     * The NAL unit should include start codes (00 00 00 01).
+     * Combined SPS+PPS+IDR buffers are correctly identified as keyframes.
      */
     public void feedNalUnit(byte[] nalData, long rtpTimestamp) {
-        if (!isStarted.get() || decoder == null) return;
+        if (!isRunning.get()) return;
 
-        // Convert 90kHz RTP timestamp to microseconds and normalize
-        long ptsUs = (rtpTimestamp * 1000000L) / 90000L;
-        if (firstTimestamp == -1) firstTimestamp = ptsUs;
-        long normalizedPts = ptsUs - firstTimestamp;
+        long timestampMs = (rtpTimestamp * 1000L) / 90000L;
 
-        int nalType = getNalType(nalData);
+        // Detect if this is a keyframe (IDR).
+        // For combined SPS+PPS+IDR buffers, we scan for the IDR NAL within.
+        boolean isKeyframe = containsIdr(nalData);
 
-        Integer idx;
-        try {
-            idx = inputBufferQueue.poll(50, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) { return; }
-
-        if (idx == null) {
-            return; // No buffer available — drop frame silently
-        }
-
-        try {
-            ByteBuffer buf = decoder.getInputBuffer(idx);
-            if (buf == null) return;
-            buf.clear();
-            buf.put(nalData);
-
-            int flags = 0;
-            if (nalType == 7 || nalType == 8) {
-                flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
-            } else if (nalType == 5) {
-                flags = MediaCodec.BUFFER_FLAG_KEY_FRAME;
-            }
-
-            decoder.queueInputBuffer(idx, 0, buf.position(), normalizedPts, flags);
-        } catch (IllegalStateException e) {
-            Log.w(TAG, "Feed error", e);
+        FrameData frame = new FrameData(nalData, 0, nalData.length, timestampMs, isKeyframe);
+        if (!frameQueue.offer(frame)) {
+            // Queue full — drop oldest frame
+            frameQueue.poll();
+            frameQueue.offer(frame);
         }
     }
 
+    /**
+     * THE SYNCHRONOUS DECODE LOOP — Modeled after alexvas VideoDecodeThread.run()
+     *
+     * This is the critical architectural difference. The reference uses synchronous
+     * dequeueInputBuffer/dequeueOutputBuffer in a loop, NOT async callbacks.
+     *
+     * After queuing a combined SPS+PPS+IDR buffer with BUFFER_FLAG_KEY_FRAME,
+     * the loop calls dequeueOutputBuffer multiple times:
+     *   1st call → INFO_OUTPUT_FORMAT_CHANGED (SPS/PPS processed)
+     *   2nd call → Frame index (IDR frame decoded and ready to render)
+     */
+    private void decodeLoop() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_VIDEO);
+        } else {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY);
+        }
+
+        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+        long firstTimestamp = -1;
+
+        Log.i(TAG, "Decode loop started");
+
+        while (isRunning.get()) {
+            try {
+                // === INPUT: Get a buffer and fill it with a frame ===
+                int inIndex = decoder.dequeueInputBuffer(DEQUEUE_INPUT_TIMEOUT_US);
+                if (inIndex >= 0) {
+                    ByteBuffer inputBuffer = decoder.getInputBuffer(inIndex);
+                    if (inputBuffer != null) {
+                        inputBuffer.clear();
+
+                        // Block up to 1000ms waiting for a frame from the RTSP thread
+                        FrameData frame = frameQueue.poll(1000, TimeUnit.MILLISECONDS);
+                        if (frame == null) {
+                            // No frame available — submit empty buffer
+                            decoder.queueInputBuffer(inIndex, 0, 0, 0L, 0);
+                        } else {
+                            // Normalize timestamp
+                            if (firstTimestamp == -1) firstTimestamp = frame.timestampMs;
+                            long pts = (frame.timestampMs - firstTimestamp) * 1000; // to microseconds
+
+                            inputBuffer.put(frame.data, frame.offset, frame.length);
+
+                            // ★ THE KEY FIX ★
+                            // Combined SPS+PPS+IDR → BUFFER_FLAG_KEY_FRAME (NOT CODEC_CONFIG!)
+                            // This matches alexvas VideoDecodeThread.kt line 358-359:
+                            //   val flags = if (frame.isKeyframe)
+                            //       (MediaCodec.BUFFER_FLAG_KEY_FRAME) else 0
+                            int flags = frame.isKeyframe ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+
+                            decoder.queueInputBuffer(inIndex, 0, frame.length, pts, flags);
+                        }
+                    }
+                }
+
+                // === OUTPUT: Drain all available output buffers ===
+                // After a combined SPS+PPS+IDR, the decoder may produce:
+                //   1. INFO_OUTPUT_FORMAT_CHANGED (processes SPS/PPS)
+                //   2. A decoded frame (the IDR)
+                // We loop to handle both events.
+                boolean frameAlreadyDequeued = false;
+                do {
+                    long timeout = frameAlreadyDequeued ? 0L : DEQUEUE_OUTPUT_TIMEOUT_US;
+                    int outIndex = decoder.dequeueOutputBuffer(bufferInfo, timeout);
+
+                    switch (outIndex) {
+                        case MediaCodec.INFO_OUTPUT_FORMAT_CHANGED:
+                        case MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED:
+                            MediaFormat newFormat = decoder.getOutputFormat();
+                            int w = newFormat.getInteger(MediaFormat.KEY_WIDTH);
+                            int h = newFormat.getInteger(MediaFormat.KEY_HEIGHT);
+                            // Use crop parameters for accurate dimensions (Samsung fix)
+                            if (newFormat.containsKey("crop-right") && newFormat.containsKey("crop-left")) {
+                                w = newFormat.getInteger("crop-right") - newFormat.getInteger("crop-left") + 1;
+                            }
+                            if (newFormat.containsKey("crop-bottom") && newFormat.containsKey("crop-top")) {
+                                h = newFormat.getInteger("crop-bottom") - newFormat.getInteger("crop-top") + 1;
+                                h = h / 16 * 16; // Align to 16 (fixes 1088→1080)
+                            }
+                            Log.i(TAG, "Format Changed: " + w + "x" + h);
+                            if (callback != null) callback.onFormatChanged(w, h);
+                            frameAlreadyDequeued = true;
+                            break;
+
+                        case MediaCodec.INFO_TRY_AGAIN_LATER:
+                            frameAlreadyDequeued = true;
+                            break;
+
+                        default:
+                            if (outIndex >= 0) {
+                                boolean render = bufferInfo.size != 0;
+                                decoder.releaseOutputBuffer(outIndex, render);
+                                if (render) {
+                                    if (callback != null) callback.onFrameRendered();
+                                    if (!firstFrameRendered) {
+                                        firstFrameRendered = true;
+                                        Log.i(TAG, "★ FIRST FRAME RENDERED ★");
+                                        if (callback != null) callback.onFirstFrame();
+                                    }
+                                }
+                                frameAlreadyDequeued = false;
+                            }
+                            break;
+                    }
+                // Keep draining until we get TRY_AGAIN_LATER
+                } while (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED
+                      || outIndex == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED);
+
+            } catch (InterruptedException e) {
+                // Expected on shutdown
+                break;
+            } catch (IllegalStateException e) {
+                Log.e(TAG, "Decoder error: " + e.getMessage());
+                if (callback != null) callback.onDecoderError(e);
+                // Try software fallback
+                if (!useSoftwareFallback) {
+                    useSoftwareFallback = true;
+                    restartWithSoftware();
+                    return;
+                }
+                break;
+            } catch (MediaCodec.CodecException e) {
+                Log.e(TAG, "Codec error: " + e.getDiagnosticInfo());
+                if (e.isRecoverable()) {
+                    Log.i(TAG, "Recoverable error, resetting decoder...");
+                    try {
+                        decoder.stop();
+                        MediaFormat fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, videoWidth, videoHeight);
+                        fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1048576);
+                        decoder.configure(fmt, outputSurface, null, 0);
+                        decoder.start();
+                    } catch (Exception e2) {
+                        Log.e(TAG, "Recovery failed", e2);
+                        break;
+                    }
+                } else {
+                    if (callback != null) callback.onDecoderError(e);
+                    if (!useSoftwareFallback) {
+                        useSoftwareFallback = true;
+                        restartWithSoftware();
+                        return;
+                    }
+                    break;
+                }
+            }
+        }
+
+        Log.i(TAG, "Decode loop ended");
+    }
+
     public void release() {
-        isStarted.set(false);
+        isRunning.set(false);
         isConfigured.set(false);
-        inputBufferQueue.clear();
+        frameQueue.clear();
+        if (decoderThread != null) {
+            decoderThread.interrupt();
+            try { decoderThread.join(2000); } catch (Exception ignored) {}
+            decoderThread = null;
+        }
         if (decoder != null) {
             try { decoder.stop(); } catch (Exception ignored) {}
             try { decoder.release(); } catch (Exception ignored) {}
             decoder = null;
         }
-        if (callbackThread != null) {
-            callbackThread.quitSafely();
-            callbackThread = null;
-        }
         activeCodecName = null;
-        firstFrameFired.set(false);
-        firstTimestamp = -1;
+        firstFrameRendered = false;
+    }
+
+    /**
+     * Check if a NAL buffer contains an IDR slice (type 5).
+     * For combined SPS+PPS+IDR buffers, we scan through start codes.
+     */
+    private static boolean containsIdr(byte[] data) {
+        if (data == null || data.length < 5) return false;
+        for (int i = 0; i < data.length - 4; i++) {
+            if (data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 1) {
+                int nalType = data[i+4] & 0x1F;
+                if (nalType == 5) return true; // IDR
+            }
+        }
+        return false;
     }
 
     private String selectCodec() {
@@ -260,21 +371,5 @@ public final class MTKDecoderFix {
     private void restartWithSoftware() {
         release();
         try { Thread.sleep(200); configure(true); } catch (Exception ignored) {}
-    }
-
-    private static byte[] withStartCode(byte[] nal) {
-        if (nal == null) return START_CODE;
-        if (nal.length >= 4 && nal[0] == 0 && nal[1] == 0 && nal[2] == 0 && nal[3] == 1) return nal;
-        byte[] r = new byte[nal.length + 4];
-        System.arraycopy(START_CODE, 0, r, 0, 4);
-        System.arraycopy(nal, 0, r, 4, nal.length);
-        return r;
-    }
-
-    private static int getNalType(byte[] d) {
-        if (d == null || d.length < 5) return -1;
-        int o = (d[0] == 0 && d[1] == 0 && d[2] == 0 && d[3] == 1) ? 4
-              : (d[0] == 0 && d[1] == 0 && d[2] == 1) ? 3 : 0;
-        return d[o] & 0x1F;
     }
 }
