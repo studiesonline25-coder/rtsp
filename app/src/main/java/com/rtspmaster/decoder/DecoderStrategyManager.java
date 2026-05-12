@@ -145,6 +145,8 @@ public final class DecoderStrategyManager {
 
     // ===================== Strategy Implementations =====================
 
+    private boolean isRendererSet = false;
+
     private void startMediaCodecGL(String url) {
         if (glSurfaceView != null) {
             mainHandler.post(() -> {
@@ -153,15 +155,19 @@ public final class DecoderStrategyManager {
             });
         }
 
-        glRenderer = new RTSPGLRenderer();
+        if (glRenderer == null) {
+            glRenderer = new RTSPGLRenderer();
+        }
+        
         glRenderer.setOnSurfaceReadyListener(decoderSurface -> {
             startRawMediaCodec(url, decoderSurface);
         });
 
-        if (glSurfaceView != null) {
+        if (glSurfaceView != null && !isRendererSet) {
             glSurfaceView.setEGLContextClientVersion(2);
             glSurfaceView.setRenderer(glRenderer);
             glSurfaceView.setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+            isRendererSet = true;
         }
     }
 
@@ -252,7 +258,7 @@ public final class DecoderStrategyManager {
         if (mtkDecoder != null) { mtkDecoder.release(); mtkDecoder = null; }
         if (rtspClient != null) { rtspClient.disconnect(); rtspClient = null; }
         if (nalAssembler != null) { nalAssembler.reset(); nalAssembler = null; }
-        if (glRenderer != null) { glRenderer.release(); glRenderer = null; }
+        // Keep glRenderer alive to avoid setRenderer crashes on reconnect
         if (rtspThread != null) { rtspThread.quitSafely(); rtspThread = null; }
     }
 
