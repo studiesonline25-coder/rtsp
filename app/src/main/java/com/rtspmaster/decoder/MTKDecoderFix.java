@@ -71,8 +71,14 @@ public final class MTKDecoderFix {
 
     public boolean configure(boolean forceSoftware) {
         this.useSoftwareFallback = forceSoftware;
-        if (outputSurface == null || spsData == null || ppsData == null) return false;
+        if (outputSurface == null || spsData == null || ppsData == null || !outputSurface.isValid()) return false;
         if (videoWidth <= 0) { videoWidth = 720; videoHeight = 1280; }
+        
+        Log.d("FIRST_CHECK", "Hardware: " + android.os.Build.HARDWARE);
+        Log.d("FIRST_CHECK", "Decoder being used: " + (activeCodecName != null ? activeCodecName : "Not selected"));
+        Log.d("FIRST_CHECK", "Surface null? " + (outputSurface == null));
+        Log.d("FIRST_CHECK", "Surface valid? " + (outputSurface != null && outputSurface.isValid()));
+
         try {
             callbackThread = new HandlerThread("MTKDecoder-CB", android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
             callbackThread.start();
@@ -102,6 +108,8 @@ public final class MTKDecoderFix {
             }
             fmt.setByteBuffer("csd-0", ByteBuffer.wrap(withStartCode(spsData)));
             fmt.setByteBuffer("csd-1", ByteBuffer.wrap(withStartCode(ppsData)));
+            fmt.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+            Log.d("FIRST_CHECK", "Color format set: " + fmt.getInteger(MediaFormat.KEY_COLOR_FORMAT));
 
             decoder.setCallback(new MediaCodec.Callback() {
                 @Override public void onInputBufferAvailable(@NonNull MediaCodec c, int idx) {
@@ -192,18 +200,10 @@ public final class MTKDecoderFix {
             int flags = 0;
             if (nalType == 7 || nalType == 8) {
                 flags = MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
-                buf.put(nalData);
             } else if (nalType == 5) {
                 flags = MediaCodec.BUFFER_FLAG_KEY_FRAME;
-                // Fix 4: Prepend SPS/PPS to IDR frame (Surgical MTK fix)
-                if (spsData != null && ppsData != null) {
-                    buf.put(withStartCode(spsData));
-                    buf.put(withStartCode(ppsData));
-                }
-                buf.put(nalData);
-            } else {
-                buf.put(nalData);
             }
+            buf.put(nalData);
             
             decoder.queueInputBuffer(idx, 0, buf.position(), normalizedPts, flags);
         } catch (IllegalStateException e) { Log.w(TAG, "Feed error", e); }
